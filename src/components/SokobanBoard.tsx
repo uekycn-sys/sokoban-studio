@@ -1,7 +1,7 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef } from 'react';
 import { Direction, ParsedBoard, Position } from '../types/game';
-import { coordsEqual } from '../engine/sokoban';
-import { AlertCircle, Undo2, Sparkles } from 'lucide-react';
+import { DIR_DELTA } from '../engine/sokoban';
+import { AlertCircle, Undo2 } from 'lucide-react';
 
 interface SokobanBoardProps {
   board: ParsedBoard;
@@ -10,9 +10,11 @@ interface SokobanBoardProps {
   boxes: Position[];
   hintBox?: Position | null;
   hintDirection?: Direction | null;
+  walkTarget?: Position | null;
   deadlockedBoxes?: Set<string>;
   showDeadlockWarning?: boolean;
   onCellClick: (pos: Position) => void;
+  onSwipeMove?: (dir: Direction) => void;
   onUndo?: () => void;
   isAiDemonstrating?: boolean;
 }
@@ -24,9 +26,11 @@ export const SokobanBoard: React.FC<SokobanBoardProps> = ({
   boxes,
   hintBox,
   hintDirection,
+  walkTarget,
   deadlockedBoxes = new Set(),
   showDeadlockWarning = true,
   onCellClick,
+  onSwipeMove,
   onUndo,
   isAiDemonstrating = false,
 }) => {
@@ -34,6 +38,8 @@ export const SokobanBoard: React.FC<SokobanBoardProps> = ({
   const wallDepth = 10; // 2.5D 立体墙体透视厚度 (px)
   const viewBoxWidth = board.width * cellSize;
   const viewBoxHeight = board.height * cellSize + wallDepth;
+
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
 
   // 目标点集合快速查询
   const goalMap = useMemo(() => {
@@ -58,13 +64,58 @@ export const SokobanBoard: React.FC<SokobanBoardProps> = ({
     }
   }, [playerFacing]);
 
+  // 提示方向旋转角度与目标落点计算
+  const hintMeta = useMemo(() => {
+    if (!hintBox || !hintDirection) return null;
+    const delta = DIR_DELTA[hintDirection];
+    const dest = { x: hintBox.x + delta.dx, y: hintBox.y + delta.dy };
+    let angle = 0;
+    switch (hintDirection) {
+      case 'u': angle = 0; break;
+      case 'r': angle = 90; break;
+      case 'd': angle = 180; break;
+      case 'l': angle = 270; break;
+    }
+    return { dest, angle, delta };
+  }, [hintBox, hintDirection]);
+
   const hasDeadlocks = showDeadlockWarning && deadlockedBoxes.size > 0 && !isAiDemonstrating;
 
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length !== 1) return;
+    touchStartRef.current = {
+      x: e.touches[0].clientX,
+      y: e.touches[0].clientY,
+    };
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (!touchStartRef.current || !onSwipeMove || e.changedTouches.length !== 1) return;
+    const dx = e.changedTouches[0].clientX - touchStartRef.current.x;
+    const dy = e.changedTouches[0].clientY - touchStartRef.current.y;
+    touchStartRef.current = null;
+
+    const minSwipeDistance = 28;
+    if (Math.abs(dx) < minSwipeDistance && Math.abs(dy) < minSwipeDistance) {
+      return; // 视为普通点击，交给 SVG onClick 处理寻路
+    }
+
+    if (Math.abs(dx) > Math.abs(dy)) {
+      onSwipeMove(dx > 0 ? 'r' : 'l');
+    } else {
+      onSwipeMove(dy > 0 ? 'd' : 'u');
+    }
+  };
+
   return (
-    <div className="relative w-full h-full flex flex-col items-center justify-center p-2 select-none">
+    <div
+      className="relative w-full h-full flex flex-col items-center justify-center p-1 sm:p-2 select-none touch-pan-y"
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+    >
       {/* 实时死锁浮动非侵入提示条 */}
       {hasDeadlocks && (
-        <div className="absolute top-3 z-30 flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-red-950/90 border border-red-500/60 shadow-lg backdrop-blur-md text-red-200 text-xs animate-bounce-short">
+        <div className="absolute top-2 sm:top-3 z-30 flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-red-950/90 border border-red-500/60 shadow-lg backdrop-blur-md text-red-200 text-xs animate-bounce-short">
           <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
           <span>检测到箱子陷入死锁</span>
           {onUndo && (
@@ -81,7 +132,7 @@ export const SokobanBoard: React.FC<SokobanBoardProps> = ({
 
       <svg
         viewBox={`0 0 ${viewBoxWidth} ${viewBoxHeight}`}
-        className="max-w-full max-h-[72vh] w-auto h-auto drop-shadow-2xl rounded-2xl overflow-hidden transition-all duration-300"
+        className="max-w-full max-h-[56vh] sm:max-h-[68vh] w-auto h-auto drop-shadow-2xl rounded-2xl overflow-hidden transition-all duration-300"
         style={{
           filter: 'drop-shadow(0 20px 35px rgba(0, 0, 0, 0.7))',
         }}
@@ -96,7 +147,7 @@ export const SokobanBoard: React.FC<SokobanBoardProps> = ({
           {/* 地板网格微光 */}
           <pattern id="floorGrid" width="60" height="60" patternUnits="userSpaceOnUse">
             <rect width="60" height="60" fill="url(#floorGrad)" />
-            <path d="M 60 0 L 0 0 0 60" fill="none" stroke="#2a384d" strokeWidth="0.75" strokeOpacity="0.4" />
+            <path d="M 60 0 L 0 0 0 60" fill="none" stroke="#2a384d" strokeWidth="0.75" strokeOpacity="0.42" />
           </pattern>
 
           {/* 环境光遮蔽 (AO) 阴影渐变 */}
@@ -108,18 +159,22 @@ export const SokobanBoard: React.FC<SokobanBoardProps> = ({
             <stop offset="0%" stopColor="#000000" stopOpacity="0.45" />
             <stop offset="100%" stopColor="#000000" stopOpacity="0" />
           </linearGradient>
+          <radialGradient id="aoCornerShadow" cx="0%" cy="0%" r="100%">
+            <stop offset="0%" stopColor="#000000" stopOpacity="0.4" />
+            <stop offset="100%" stopColor="#000000" stopOpacity="0" />
+          </radialGradient>
 
           {/* 2.5D 墙体顶面细腻石材渐变 */}
           <linearGradient id="wallTopSurface" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor="#4f5e74" />
-            <stop offset="50%" stopColor="#3d4b60" />
-            <stop offset="100%" stopColor="#2c3748" />
+            <stop offset="0%" stopColor="#4c5b70" />
+            <stop offset="55%" stopColor="#3b495d" />
+            <stop offset="100%" stopColor="#2e394b" />
           </linearGradient>
 
           {/* 2.5D 墙体正面深色厚度立体渐变 */}
           <linearGradient id="wallFrontFace" x1="0%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" stopColor="#1e2736" />
-            <stop offset="100%" stopColor="#0e131b" />
+            <stop offset="0%" stopColor="#1d2635" />
+            <stop offset="100%" stopColor="#0b1018" />
           </linearGradient>
 
           {/* 目标点琥珀微光滤镜 */}
@@ -161,7 +216,7 @@ export const SokobanBoard: React.FC<SokobanBoardProps> = ({
           </linearGradient>
         </defs>
 
-        {/* 1. 地板层（只渲染室内 playable 区域，支持 AO 墙边阴影） */}
+        {/* 1. 地板层（只渲染室内 playable 区域，支持 AO 墙边阴影与角落遮蔽） */}
         <g id="floors">
           {Array.from({ length: board.height }).map((_, y) =>
             Array.from({ length: board.width }).map((_, x) => {
@@ -171,6 +226,7 @@ export const SokobanBoard: React.FC<SokobanBoardProps> = ({
 
               const hasWallAbove = y > 0 && board.walls[y - 1][x];
               const hasWallLeft = x > 0 && board.walls[y][x - 1];
+              const hasWallTopLeft = y > 0 && x > 0 && board.walls[y - 1][x - 1];
 
               return (
                 <g key={`floor-${x}-${y}`}>
@@ -180,7 +236,7 @@ export const SokobanBoard: React.FC<SokobanBoardProps> = ({
                     width={cellSize}
                     height={cellSize}
                     fill="url(#floorGrid)"
-                    className="cursor-pointer transition-colors duration-150 hover:opacity-95"
+                    className="cursor-pointer transition-opacity duration-150 hover:opacity-85"
                     onClick={() => onCellClick({ x, y })}
                   />
 
@@ -207,11 +263,42 @@ export const SokobanBoard: React.FC<SokobanBoardProps> = ({
                       pointerEvents="none"
                     />
                   )}
+
+                  {/* 左上对角墙体角隅环境遮蔽 */}
+                  {hasWallTopLeft && !hasWallAbove && !hasWallLeft && (
+                    <rect
+                      x={px}
+                      y={py}
+                      width={14}
+                      height={14}
+                      fill="url(#aoCornerShadow)"
+                      pointerEvents="none"
+                    />
+                  )}
                 </g>
               );
             })
           )}
         </g>
+
+        {/* 点击寻路目的地微光指示 */}
+        {walkTarget && (
+          <g
+            id="walk-target"
+            className="pointer-events-none"
+            transform={`translate(${(walkTarget.x + 0.5) * cellSize}, ${(walkTarget.y + 0.5) * cellSize})`}
+          >
+            <circle
+              r={cellSize * 0.25}
+              fill="none"
+              stroke="#38bdf8"
+              strokeWidth="2"
+              strokeOpacity="0.85"
+              className="animate-ping"
+            />
+            <circle r={4} fill="#38bdf8" fillOpacity="0.9" />
+          </g>
+        )}
 
         {/* 2. 目标点层（优雅内嵌式微光卡槽） */}
         <g id="goals">
@@ -267,44 +354,85 @@ export const SokobanBoard: React.FC<SokobanBoardProps> = ({
               const wallUp = y > 0 && board.walls[y - 1][x];
               const wallDown = y < board.height - 1 && board.walls[y + 1][x];
               const wallLeft = x > 0 && board.walls[y][x - 1];
-              const wallRight = x < board.width - 1 && board.walls[y + 1]?.[x] !== undefined && board.walls[y][x + 1];
+              const wallRight = x < board.width - 1 && board.walls[y][x + 1];
 
               return (
                 <g key={`wall-${x}-${y}`}>
                   {/* (A) 2.5D 正面厚度下坠面（当下方非墙体时渲染三维厚度） */}
                   {!wallDown && (
-                    <rect
-                      x={px}
-                      y={py + cellSize - 2}
-                      width={cellSize}
-                      height={wallDepth + 2}
-                      fill="url(#wallFrontFace)"
-                      stroke="#0f172a"
-                      strokeWidth="1"
-                    />
+                    <>
+                      <rect
+                        x={px}
+                        y={py + cellSize - 1}
+                        width={cellSize}
+                        height={wallDepth + 1}
+                        fill="url(#wallFrontFace)"
+                      />
+                      {/* 厚度面左右边线仅在未连接相邻墙时绘制 */}
+                      {!wallLeft && (
+                        <line
+                          x1={px + 0.5}
+                          y1={py + cellSize}
+                          x2={px + 0.5}
+                          y2={py + cellSize + wallDepth}
+                          stroke="#0a0f18"
+                          strokeWidth="1"
+                        />
+                      )}
+                      {!wallRight && (
+                        <line
+                          x1={px + cellSize - 0.5}
+                          y1={py + cellSize}
+                          x2={px + cellSize - 0.5}
+                          y2={py + cellSize + wallDepth}
+                          stroke="#05080f"
+                          strokeWidth="1"
+                        />
+                      )}
+                      <line
+                        x1={px}
+                        y1={py + cellSize + wallDepth - 0.5}
+                        x2={px + cellSize}
+                        y2={py + cellSize + wallDepth - 0.5}
+                        stroke="#05080f"
+                        strokeWidth="1.2"
+                      />
+                    </>
                   )}
 
-                  {/* (B) 墙体顶面无缝石材表面 */}
+                  {/* (B) 墙体顶面无缝石材表面（无内部硬边框，彻底融合相邻砖块） */}
                   <rect
-                    x={px}
-                    y={py}
-                    width={cellSize}
-                    height={cellSize}
+                    x={px - (wallLeft ? 0.5 : 0)}
+                    y={py - (wallUp ? 0.5 : 0)}
+                    width={cellSize + (wallLeft ? 0.5 : 0) + (wallRight ? 0.5 : 0)}
+                    height={cellSize + (wallUp ? 0.5 : 0) + (wallDown ? 0.5 : 0)}
                     fill="url(#wallTopSurface)"
-                    stroke="#1e2736"
-                    strokeWidth="0.8"
                   />
 
-                  {/* (C) 边缘高光边角细线（立体斜边倒角） */}
+                  {/* 细腻微妙内部石材纹理微刻线（仅装饰，不破坏连续感） */}
+                  <rect
+                    x={px + 8}
+                    y={py + 8}
+                    width={cellSize - 16}
+                    height={cellSize - 16}
+                    rx="4"
+                    fill="#ffffff"
+                    fillOpacity="0.025"
+                    stroke="#0f172a"
+                    strokeWidth="0.6"
+                    strokeOpacity="0.22"
+                  />
+
+                  {/* (C) 仅在暴露外边缘绘制立体倒角高光与阴影边 */}
                   {!wallUp && (
                     <line
                       x1={px}
                       y1={py + 1}
                       x2={px + cellSize}
                       y2={py + 1}
-                      stroke="#718096"
-                      strokeWidth="1.2"
-                      strokeOpacity="0.6"
+                      stroke="#94a3b8"
+                      strokeWidth="1.5"
+                      strokeOpacity="0.45"
                     />
                   )}
                   {!wallLeft && (
@@ -313,30 +441,30 @@ export const SokobanBoard: React.FC<SokobanBoardProps> = ({
                       y1={py}
                       x2={px + 1}
                       y2={py + cellSize}
-                      stroke="#4a5568"
-                      strokeWidth="1"
-                      strokeOpacity="0.5"
+                      stroke="#64748b"
+                      strokeWidth="1.2"
+                      strokeOpacity="0.4"
                     />
                   )}
                   {!wallRight && (
                     <line
-                      x1={px + cellSize - 1}
+                      x1={px + cellSize - 0.8}
                       y1={py}
-                      x2={px + cellSize - 1}
+                      x2={px + cellSize - 0.8}
                       y2={py + cellSize}
-                      stroke="#1a202c"
-                      strokeWidth="1"
-                      strokeOpacity="0.7"
+                      stroke="#0f172a"
+                      strokeWidth="1.5"
+                      strokeOpacity="0.75"
                     />
                   )}
                   {!wallDown && (
                     <line
                       x1={px}
-                      y1={py + cellSize}
+                      y1={py + cellSize - 0.5}
                       x2={px + cellSize}
-                      y2={py + cellSize}
-                      stroke="#111827"
-                      strokeWidth="1.5"
+                      y2={py + cellSize - 0.5}
+                      stroke="#0f172a"
+                      strokeWidth="1.6"
                     />
                   )}
                 </g>
@@ -345,26 +473,57 @@ export const SokobanBoard: React.FC<SokobanBoardProps> = ({
           )}
         </g>
 
-        {/* 4. 单步提示指示标记 */}
+        {/* 4. 单步提示指示标记 + 推箱方向箭头 + 目标落点虚影 */}
         {hintBox && (
-          <g
-            id="hint-indicator"
-            className="animate-bounce-short pointer-events-none"
-            transform={`translate(${hintBox.x * cellSize}, ${hintBox.y * cellSize})`}
-          >
-            <rect
-              x={4}
-              y={4}
-              width={cellSize - 8}
-              height={cellSize - 8}
-              rx="8"
-              fill="none"
-              stroke="#60a5fa"
-              strokeWidth="3.5"
-              strokeDasharray="6 4"
-              className="animate-spin"
-              style={{ transformOrigin: `${cellSize / 2}px ${cellSize / 2}px` }}
-            />
+          <g id="hint-indicator" className="pointer-events-none">
+            {/* 目标落点预测虚影 */}
+            {hintMeta && (
+              <rect
+                x={hintMeta.dest.x * cellSize + 8}
+                y={hintMeta.dest.y * cellSize + 8}
+                width={cellSize - 16}
+                height={cellSize - 16}
+                rx="8"
+                fill="#3b82f6"
+                fillOpacity="0.16"
+                stroke="#60a5fa"
+                strokeWidth="2"
+                strokeDasharray="4 4"
+                className="animate-pulse"
+              />
+            )}
+
+            {/* 高亮被推箱子外框 */}
+            <g transform={`translate(${hintBox.x * cellSize}, ${hintBox.y * cellSize})`}>
+              <rect
+                x={3}
+                y={3}
+                width={cellSize - 6}
+                height={cellSize - 6}
+                rx="10"
+                fill="none"
+                stroke="#60a5fa"
+                strokeWidth="3"
+                strokeDasharray="6 4"
+              />
+
+              {/* 推箱方向高亮引导箭头 */}
+              {hintMeta && (
+                <g
+                  transform={`translate(${cellSize / 2 + hintMeta.delta.dx * (cellSize * 0.45)}, ${
+                    cellSize / 2 + hintMeta.delta.dy * (cellSize * 0.45)
+                  }) rotate(${hintMeta.angle})`}
+                >
+                  <path
+                    d="M 0 -10 L 9 3 L 3 3 L 3 10 L -3 10 L -3 3 L -9 3 Z"
+                    fill="#60a5fa"
+                    stroke="#0f172a"
+                    strokeWidth="1.5"
+                    className="animate-bounce-short"
+                  />
+                </g>
+              )}
+            </g>
           </g>
         )}
 
@@ -454,7 +613,7 @@ export const SokobanBoard: React.FC<SokobanBoardProps> = ({
                   strokeOpacity="0.6"
                 />
 
-                {/* 状态徽标：翡翠星符 / 死锁感叹号 / 经典木纹圆心 */}
+                {/* 状态徽标：翡翠星符 / 死锁脉冲 / 经典木纹圆心 */}
                 {isDeadlocked ? (
                   <circle cx={cellSize / 2} cy={cellSize / 2} r={3.5} fill="#f87171" className="animate-ping" />
                 ) : onGoal ? (

@@ -171,7 +171,7 @@ async function main() {
   // 5. 创建 Commit
   console.log('\n5️⃣ 正在创建发布提交 (Commit)...');
   const commitPayload = {
-    message: 'feat: automated release of Sokoban Studio V2',
+    message: 'feat: final polish, seamless 2.5D walls, smart hint & mobile gestures',
     tree: tree.sha,
     parents: parentSha ? [parentSha] : []
   };

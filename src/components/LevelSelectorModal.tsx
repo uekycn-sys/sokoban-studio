@@ -1,5 +1,5 @@
-import React, { useState, useMemo } from 'react';
-import { X, Star, Trophy, FileCode, CheckCircle2, AlertTriangle, Play, Sparkles } from 'lucide-react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { X, Star, Trophy, FileCode, CheckCircle2, AlertTriangle, Sparkles } from 'lucide-react';
 import { LevelDefinition, LevelProgress } from '../types/game';
 import { parseXSB, isMapEnclosed } from '../engine/sokoban';
 import { SokobanSolver } from '../solver/solverCore';
@@ -128,6 +128,42 @@ export const LevelSelectorModal: React.FC<LevelSelectorModalProps> = ({
   const [customSuccessInfo, setCustomSuccessInfo] = useState<string | null>(null);
   const [isValidating, setIsValidating] = useState<boolean>(false);
 
+  // 打开弹窗时自动定位到当前关卡所属章节，并监听 Esc 退出
+  useEffect(() => {
+    if (!isOpen) return;
+    const currentLvl = levels.find(l => l.id === currentLevelId);
+    if (currentLvl && currentLvl.chapter >= 1 && currentLvl.chapter <= 5) {
+      setSelectedTab(currentLvl.chapter);
+    }
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, currentLevelId, levels, onClose]);
+
+  const totalStats = useMemo(() => {
+    let completed = 0;
+    let earnedStars = 0;
+    for (const lvl of levels) {
+      const p = progressMap[lvl.id];
+      if (p?.completed) {
+        completed++;
+        earnedStars += p.stars || 0;
+      }
+    }
+    return {
+      completed,
+      total: levels.length,
+      earnedStars,
+      maxStars: levels.length * 3,
+    };
+  }, [levels, progressMap]);
+
   if (!isOpen) return null;
 
   const chapters = [
@@ -203,7 +239,7 @@ export const LevelSelectorModal: React.FC<LevelSelectorModalProps> = ({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-studio-950/80 backdrop-blur-md animate-in fade-in duration-200">
       <div className="relative w-full max-w-4xl max-h-[90vh] bg-studio-900 border border-studio-800 rounded-3xl shadow-2xl flex flex-col overflow-hidden">
         {/* 头部标题与关闭 */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-studio-800">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-studio-800 gap-3">
           <div>
             <h2 className="text-xl font-bold text-studio-100 flex items-center gap-2">
               <Trophy className="w-5 h-5 text-amber-400" />
@@ -211,12 +247,25 @@ export const LevelSelectorModal: React.FC<LevelSelectorModalProps> = ({
             </h2>
             <p className="text-xs text-studio-400 mt-0.5">循序渐进的推箱之旅，支持导入任意标准 XSB 关卡并由 AI 求解验算</p>
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 rounded-xl text-studio-400 hover:text-studio-100 hover:bg-studio-800 transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-3 shrink-0">
+            <div className="hidden sm:flex items-center gap-3 px-3 py-1.5 rounded-xl bg-studio-850 border border-studio-800 text-xs font-game">
+              <span className="text-emerald-400 font-semibold">
+                {totalStats.completed}/{totalStats.total} 关
+              </span>
+              <span className="text-studio-700">|</span>
+              <span className="flex items-center gap-1 text-amber-400 font-semibold">
+                <Star className="w-3.5 h-3.5 fill-amber-400" />
+                {totalStats.earnedStars}/{totalStats.maxStars}
+              </span>
+            </div>
+            <button
+              onClick={onClose}
+              className="p-2 rounded-xl text-studio-400 hover:text-studio-100 hover:bg-studio-800 transition-colors"
+              title="关闭 (Esc)"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* 章节标签栏 + 自定义导入 Tab */}

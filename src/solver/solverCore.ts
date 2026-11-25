@@ -724,6 +724,8 @@ export class SokobanSolver {
   }
 }
 
+const solverCache = new WeakMap<ParsedBoard, SokobanSolver>();
+
 /**
  * 实时死锁箱子快速诊断函数：
  * 判定当前棋盘中哪些未归位的箱子已处于静态死锁或 2x2 死锁状态
@@ -731,11 +733,11 @@ export class SokobanSolver {
 export function detectDeadlockedBoxes(board: ParsedBoard, boxes: Position[]): Set<string> {
   const deadlocked = new Set<string>();
 
-  // 缓存或获取求解器单例以复用预计算的静态死锁表
-  let solver = (board as any)._cachedSolver as SokobanSolver | undefined;
+  // 使用 WeakMap 缓存求解器实例，避免污染 board 对象导致 Worker postMessage 序列化异常
+  let solver = solverCache.get(board);
   if (!solver) {
     solver = new SokobanSolver(board);
-    (board as any)._cachedSolver = solver;
+    solverCache.set(board, solver);
   }
 
   const staticDeadlocks = solver.getStaticDeadlocks();

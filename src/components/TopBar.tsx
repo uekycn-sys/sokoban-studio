@@ -20,6 +20,8 @@ interface TopBarProps {
   totalLevels: number;
   movesCount: number;
   pushesCount: number;
+  goalsOnTarget: number;
+  totalGoals: number;
   canUndo: boolean;
   canRedo: boolean;
   isMuted: boolean;
@@ -40,6 +42,8 @@ export const TopBar: React.FC<TopBarProps> = ({
   totalLevels,
   movesCount,
   pushesCount,
+  goalsOnTarget,
+  totalGoals,
   canUndo,
   canRedo,
   isMuted,
@@ -98,16 +102,22 @@ export const TopBar: React.FC<TopBarProps> = ({
       </div>
 
       {/* 状态统计面板 */}
-      <div className="flex items-center gap-2 sm:gap-4 font-game text-xs sm:text-sm">
-        <div className="bg-studio-850 px-3 py-1 rounded-lg border border-studio-750 flex items-center gap-2">
+      <div className="flex items-center gap-1.5 sm:gap-3 font-game text-xs sm:text-sm">
+        <div className="bg-studio-850 px-2.5 sm:px-3 py-1 rounded-lg border border-studio-750 flex items-center gap-1.5">
+          <span className="text-studio-400">归位:</span>
+          <span className={goalsOnTarget === totalGoals ? 'text-emerald-400 font-bold' : 'text-sky-400 font-bold'}>
+            {goalsOnTarget}/{totalGoals}
+          </span>
+        </div>
+        <div className="bg-studio-850 px-2.5 sm:px-3 py-1 rounded-lg border border-studio-750 flex items-center gap-1.5">
           <span className="text-studio-400">步数:</span>
           <span className="text-amber-400 font-bold">{movesCount}</span>
         </div>
-        <div className="bg-studio-850 px-3 py-1 rounded-lg border border-studio-750 flex items-center gap-2">
+        <div className="hidden xs:flex bg-studio-850 px-2.5 sm:px-3 py-1 rounded-lg border border-studio-750 items-center gap-1.5">
           <span className="text-studio-400">推箱:</span>
           <span className="text-emerald-400 font-bold">{pushesCount}</span>
         </div>
-        <div className="hidden sm:flex bg-studio-850 px-3 py-1 rounded-lg border border-studio-750 items-center gap-2">
+        <div className="hidden md:flex bg-studio-850 px-3 py-1 rounded-lg border border-studio-750 items-center gap-1.5">
           <span className="text-studio-400">基准:</span>
           <span className="text-studio-300">{currentLevel.parSteps}步</span>
         </div>

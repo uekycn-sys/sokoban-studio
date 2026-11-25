@@ -5,7 +5,6 @@ import {
   LevelProgress,
   SolverResult,
   Position,
-  MoveChar,
   LevelDefinition,
 } from './types/game';
 import { LEVELS } from './levels/levels';
@@ -18,6 +17,7 @@ import {
   findWalkPath,
   DIR_DELTA,
   coordsEqual,
+  checkIsWon,
 } from './engine/sokoban';
 import { SokobanSolver, detectDeadlockedBoxes } from './solver/solverCore';
 import { sound } from './audio/sound';
@@ -27,6 +27,15 @@ import { AIDemoBar } from './components/AIDemoBar';
 import { LevelSelectorModal } from './components/LevelSelectorModal';
 import { VictoryModal } from './components/VictoryModal';
 import { VirtualDPad } from './components/VirtualDPad';
+
+interface DemoSnapshot {
+  moves: number;
+  pushes: number;
+  player: Position;
+  playerFacing: Direction;
+  boxes: Position[];
+  prefixPushes: number[];
+}
 
 export const App: React.FC = () => {
   // 1. 关卡与存档持久化
@@ -55,6 +64,7 @@ export const App: React.FC = () => {
 
   const [isLevelSelectorOpen, setIsLevelSelectorOpen] = useState<boolean>(false);
   const [isVictoryModalOpen, setIsVictoryModalOpen] = useState<boolean>(false);
+  const [isNewBest, setIsNewBest] = useState<boolean>(false);
 
   // 当前有效关卡对象（自定义关卡优先）
   const activeLevel = customLevel || LEVELS[levelIndex];
@@ -62,26 +72,27 @@ export const App: React.FC = () => {
   // 2. 棋盘解析与游戏状态
   const board = useMemo(() => parseXSB(activeLevel.xsb), [activeLevel]);
   const [gameState, setGameState] = useState<GameState>(() => createInitialGameState(board));
+  const [walkTarget, setWalkTarget] = useState<Position | null>(null);
 
-  // 实时死锁诊断计算
+  // 实时死锁诊断与归位进度计算
   const deadlockedBoxes = useMemo(() => {
     return detectDeadlockedBoxes(board, gameState.boxes);
   }, [board, gameState.boxes]);
 
-  // 换关或加载自定义关卡时重置状态
-  useEffect(() => {
-    setGameState(createInitialGameState(board));
-    setHintBox(null);
-    setHintDirection(null);
-    setIsDemonstrating(false);
-    setIsPlaying(false);
-    setDeadlockDetected(false);
-    setSolverResult(null);
-    setIsVictoryModalOpen(false);
-    if (!customLevel) {
-      localStorage.setItem('sokoban_current_level', String(levelIndex));
+  const goalsOnTarget = useMemo(() => {
+    return gameState.boxes.filter(b => board.goals[b.y]?.[b.x]).length;
+  }, [board.goals, gameState.boxes]);
+
+  // 自动寻路 / 提示步骤执行定时器引用
+  const walkTimerRef = useRef<number | null>(null);
+
+  const clearWalkTimer = useCallback(() => {
+    if (walkTimerRef.current !== null) {
+      window.clearInterval(walkTimerRef.current);
+      walkTimerRef.current = null;
     }
-  }, [board, levelIndex, customLevel]);
+    setWalkTarget(null);
+  }, []);
 
   // 3. AI 求解与演示状态
   const [isSolving, setIsSolving] = useState<boolean>(false);
@@ -94,17 +105,27 @@ export const App: React.FC = () => {
   const [hintBox, setHintBox] = useState<Position | null>(null);
   const [hintDirection, setHintDirection] = useState<Direction | null>(null);
 
-  // Web Worker 引用
+  // 演示起始快照（用于精确还原进度条跳转时的步数/推箱数）
+  const demoSnapshotRef = useRef<DemoSnapshot | null>(null);
+  const pendingStartSnapshotRef = useRef<{
+    moves: number;
+    pushes: number;
+    player: Position;
+    playerFacing: Direction;
+    boxes: Position[];
+  } | null>(null);
+
+  // Web Worker 引用与生命周期管理
   const workerRef = useRef<Worker | null>(null);
 
-  useEffect(() => {
-    // 实例化 Web Worker
-    workerRef.current = new Worker(
+  const spawnWorker = useCallback(() => {
+    workerRef.current?.terminate();
+    const worker = new Worker(
       new URL('./solver/solver.worker.ts', import.meta.url),
       { type: 'module' }
     );
 
-    workerRef.current.onmessage = (e: MessageEvent) => {
+    worker.onmessage = (e: MessageEvent) => {
       const data = e.data;
       if (data.type === 'SOLVE_RESULT') {
         const result: SolverResult = data.payload;
@@ -112,168 +133,346 @@ export const App: React.FC = () => {
         setSolverResult(result);
 
         if (result.success && result.steps && result.steps.length > 0) {
+          const prefixPushes: number[] = [0];
+          let pushAcc = 0;
+          for (const st of result.steps) {
+            if (st.moveChar === st.moveChar.toUpperCase()) {
+              pushAcc++;
+            }
+            prefixPushes.push(pushAcc);
+          }
+
+          const base = pendingStartSnapshotRef.current;
+          if (base) {
+            demoSnapshotRef.current = {
+              ...base,
+              prefixPushes,
+            };
+          }
+
           setDeadlockDetected(false);
           setIsDemonstrating(true);
           setIsPlaying(true);
           setCurrentStepIndex(0);
         } else {
-          // 当前局面无解，触发死局提示
           setDeadlockDetected(true);
         }
       }
     };
 
-    return () => {
-      workerRef.current?.terminate();
-    };
+    workerRef.current = worker;
   }, []);
 
+  useEffect(() => {
+    spawnWorker();
+    return () => {
+      workerRef.current?.terminate();
+      clearWalkTimer();
+    };
+  }, [clearWalkTimer, spawnWorker]);
+
+  // 换关或加载自定义关卡时重置状态
+  useEffect(() => {
+    clearWalkTimer();
+    setGameState(createInitialGameState(board));
+    setHintBox(null);
+    setHintDirection(null);
+    setIsDemonstrating(false);
+    setIsPlaying(false);
+    setDeadlockDetected(false);
+    setSolverResult(null);
+    setIsVictoryModalOpen(false);
+    setIsNewBest(false);
+    demoSnapshotRef.current = null;
+    if (!customLevel) {
+      localStorage.setItem('sokoban_current_level', String(levelIndex));
+    }
+  }, [board, clearWalkTimer, customLevel, levelIndex]);
+
   // 4. 移动与推箱逻辑执行
-  const executeMove = useCallback((dir: Direction) => {
+  const applySingleMove = useCallback(
+    (dir: Direction, clearHint = true) => {
+      if (isDemonstrating) {
+        setIsDemonstrating(false);
+        setIsPlaying(false);
+      }
+      if (clearHint) {
+        setHintBox(null);
+        setHintDirection(null);
+      }
+
+      setGameState(prev => {
+        if (prev.isWon) return prev;
+        const { nextState, moved } = applyMove(prev, board, dir);
+        if (!moved) return nextState;
+
+        // 音效触发
+        const lastAction = nextState.history[nextState.history.length - 1];
+        if (lastAction?.isPush) {
+          sound.playPush();
+          if (lastAction.boxTo && board.goals[lastAction.boxTo.y]?.[lastAction.boxTo.x]) {
+            sound.playTargetChime();
+          }
+        } else {
+          sound.playStep();
+        }
+
+        // 胜利结算
+        if (nextState.isWon) {
+          sound.playVictory();
+          setIsVictoryModalOpen(true);
+
+          const par = activeLevel.parSteps;
+          let stars = 1;
+          if (nextState.movesCount <= Math.round(par * 1.15)) {
+            stars = 3;
+          } else if (nextState.movesCount <= Math.round(par * 1.5)) {
+            stars = 2;
+          }
+
+          setProgressMap(oldProg => {
+            const currentBest = oldProg[activeLevel.id];
+            const brokeRecord =
+              !currentBest || nextState.movesCount < currentBest.bestSteps;
+            setIsNewBest(brokeRecord);
+
+            const newBestSteps = currentBest
+              ? Math.min(currentBest.bestSteps, nextState.movesCount)
+              : nextState.movesCount;
+            const newBestPushes = currentBest
+              ? Math.min(currentBest.bestPushes, nextState.pushesCount)
+              : nextState.pushesCount;
+            const newStars = currentBest ? Math.max(currentBest.stars, stars) : stars;
+
+            const updated = {
+              ...oldProg,
+              [activeLevel.id]: {
+                completed: true,
+                bestSteps: newBestSteps,
+                bestPushes: newBestPushes,
+                stars: newStars,
+              },
+            };
+            localStorage.setItem('sokoban_progress', JSON.stringify(updated));
+            return updated;
+          });
+        }
+
+        return nextState;
+      });
+    },
+    [activeLevel, board, isDemonstrating]
+  );
+
+  const executeMove = useCallback(
+    (dir: Direction) => {
+      clearWalkTimer();
+      applySingleMove(dir, true);
+    },
+    [applySingleMove, clearWalkTimer]
+  );
+
+  // 撤销 / 重做 / 重开
+  const handleUndo = useCallback(() => {
+    clearWalkTimer();
     if (isDemonstrating) {
       setIsDemonstrating(false);
       setIsPlaying(false);
     }
     setHintBox(null);
     setHintDirection(null);
-
+    setDeadlockDetected(false);
     setGameState(prev => {
-      if (prev.isWon) return prev;
-      const { nextState, moved } = applyMove(prev, board, dir);
-      if (!moved) return nextState;
-
-      // 音效触发
-      const lastAction = nextState.history[nextState.history.length - 1];
-      if (lastAction?.isPush) {
-        sound.playPush();
-        if (lastAction.boxTo && board.goals[lastAction.boxTo.y]?.[lastAction.boxTo.x]) {
-          sound.playTargetChime();
-        }
-      } else {
-        sound.playStep();
-      }
-
-      // 胜利结算
-      if (nextState.isWon) {
-        sound.playVictory();
-        setIsVictoryModalOpen(true);
-
-        // 星级计算
-        const par = activeLevel.parSteps;
-        let stars = 1;
-        if (nextState.movesCount <= Math.round(par * 1.15)) {
-          stars = 3;
-        } else if (nextState.movesCount <= Math.round(par * 1.5)) {
-          stars = 2;
-        }
-
-        setProgressMap(oldProg => {
-          const currentBest = oldProg[activeLevel.id];
-          const newBestSteps = currentBest
-            ? Math.min(currentBest.bestSteps, nextState.movesCount)
-            : nextState.movesCount;
-          const newBestPushes = currentBest
-            ? Math.min(currentBest.bestPushes, nextState.pushesCount)
-            : nextState.pushesCount;
-          const newStars = currentBest ? Math.max(currentBest.stars, stars) : stars;
-
-          const updated = {
-            ...oldProg,
-            [activeLevel.id]: {
-              completed: true,
-              bestSteps: newBestSteps,
-              bestPushes: newBestPushes,
-              stars: newStars,
-            },
-          };
-          localStorage.setItem('sokoban_progress', JSON.stringify(updated));
-          return updated;
-        });
-      }
-
-      return nextState;
-    });
-  }, [activeLevel, board, isDemonstrating]);
-
-  // 撤销 / 重做 / 重开
-  const handleUndo = useCallback(() => {
-    if (isDemonstrating) {
-      setIsDemonstrating(false);
-      setIsPlaying(false);
-    }
-    setGameState(prev => {
+      if (prev.history.length === 0) return prev;
       const next = undoMove(prev, board);
       sound.playUndo();
       return next;
     });
-  }, [board, isDemonstrating]);
+  }, [board, clearWalkTimer, isDemonstrating]);
 
   const handleRedo = useCallback(() => {
+    clearWalkTimer();
     if (isDemonstrating) {
       setIsDemonstrating(false);
       setIsPlaying(false);
     }
+    setHintBox(null);
+    setHintDirection(null);
     setGameState(prev => {
+      if (prev.redoStack.length === 0) return prev;
       const next = redoMove(prev, board);
       sound.playStep();
       return next;
     });
-  }, [board, isDemonstrating]);
+  }, [board, clearWalkTimer, isDemonstrating]);
 
   const handleReset = useCallback(() => {
+    clearWalkTimer();
     if (isDemonstrating) {
       setIsDemonstrating(false);
       setIsPlaying(false);
     }
     setDeadlockDetected(false);
+    setIsNewBest(false);
     setGameState(createInitialGameState(board));
     setHintBox(null);
     setHintDirection(null);
-  }, [board, isDemonstrating]);
+  }, [board, clearWalkTimer, isDemonstrating]);
 
   // 5. 点击自动寻路 / 相邻推箱
-  const handleCellClick = useCallback((targetPos: Position) => {
-    if (gameState.isWon || isDemonstrating) return;
+  const handleCellClick = useCallback(
+    (targetPos: Position) => {
+      if (gameState.isWon || isDemonstrating) return;
+      clearWalkTimer();
 
-    // 检查是否点击了与人物相邻的箱子（直觉点推）
-    const boxIndex = gameState.boxes.findIndex(b => coordsEqual(b, targetPos));
-    if (boxIndex !== -1) {
-      const dx = targetPos.x - gameState.player.x;
-      const dy = targetPos.y - gameState.player.y;
-      if (Math.abs(dx) + Math.abs(dy) === 1) {
-        let dir: Direction = 'd';
-        if (dx === 1) dir = 'r';
-        else if (dx === -1) dir = 'l';
-        else if (dy === 1) dir = 'd';
-        else if (dy === -1) dir = 'u';
-        executeMove(dir);
-        return;
-      }
-    }
-
-    // BFS 自动沿最短路走到点击空地
-    const path = findWalkPath(
-      gameState.player,
-      targetPos,
-      gameState.boxes,
-      board.walls,
-      board.width,
-      board.height
-    );
-
-    if (path && path.length > 0) {
-      let stepIdx = 0;
-      const timer = setInterval(() => {
-        if (stepIdx < path.length) {
-          executeMove(path[stepIdx++]);
-        } else {
-          clearInterval(timer);
+      // 检查是否点击了与人物相邻的箱子（直觉点推）
+      const boxIndex = gameState.boxes.findIndex(b => coordsEqual(b, targetPos));
+      if (boxIndex !== -1) {
+        const dx = targetPos.x - gameState.player.x;
+        const dy = targetPos.y - gameState.player.y;
+        if (Math.abs(dx) + Math.abs(dy) === 1) {
+          let dir: Direction = 'd';
+          if (dx === 1) dir = 'r';
+          else if (dx === -1) dir = 'l';
+          else if (dy === 1) dir = 'd';
+          else if (dy === -1) dir = 'u';
+          applySingleMove(dir, true);
+          return;
         }
-      }, 50);
-    }
-  }, [board, executeMove, gameState, isDemonstrating]);
+      }
 
-  // 6. 全局键盘热键绑定
+      // BFS 自动沿最短路走到点击空地
+      const path = findWalkPath(
+        gameState.player,
+        targetPos,
+        gameState.boxes,
+        board.walls,
+        board.width,
+        board.height
+      );
+
+      if (path && path.length > 0) {
+        setWalkTarget(targetPos);
+        let stepIdx = 0;
+        walkTimerRef.current = window.setInterval(() => {
+          if (stepIdx < path.length) {
+            applySingleMove(path[stepIdx++], true);
+          } else {
+            clearWalkTimer();
+          }
+        }, 48);
+      }
+    },
+    [applySingleMove, board, clearWalkTimer, gameState, isDemonstrating]
+  );
+
+  // 6. AI 智能单步提示 (Hint)：定位最近一次推箱动作，高亮目标箱子与方向并优雅移动推入
+  const triggerHint = useCallback(() => {
+    if (gameState.isWon || isSolving) return;
+    clearWalkTimer();
+
+    try {
+      const solver = new SokobanSolver(board);
+      const res = solver.solve(gameState.player, gameState.boxes, {
+        maxStates: 120000,
+        timeoutMs: 1800,
+      });
+
+      if (res.success && res.steps && res.steps.length > 0) {
+        const firstPushIdx = res.steps.findIndex(
+          s => s.moveChar === s.moveChar.toUpperCase()
+        );
+        const endIdx = firstPushIdx !== -1 ? firstPushIdx : 0;
+        const targetStep = res.steps[endIdx];
+        const pushDir = targetStep.moveChar.toLowerCase() as Direction;
+
+        // 若存在推箱步，高亮待推动箱子及其推进方向
+        if (firstPushIdx !== -1) {
+          setHintBox({ ...targetStep.player });
+          setHintDirection(pushDir);
+        }
+
+        const seq = res.steps.slice(0, endIdx + 1).map(s => s.moveChar.toLowerCase() as Direction);
+        let idx = 0;
+
+        if (seq.length === 1) {
+          walkTimerRef.current = window.setTimeout(() => {
+            walkTimerRef.current = null;
+            applySingleMove(seq[0], false);
+            window.setTimeout(() => {
+              setHintBox(null);
+              setHintDirection(null);
+            }, 320);
+          }, 180) as unknown as number;
+        } else {
+          walkTimerRef.current = window.setInterval(() => {
+            if (idx < seq.length - 1) {
+              applySingleMove(seq[idx++], false);
+            } else {
+              clearWalkTimer();
+              // 走到推箱站位后稍微停顿展示箭头，再推箱
+              window.setTimeout(() => {
+                applySingleMove(seq[seq.length - 1], false);
+                window.setTimeout(() => {
+                  setHintBox(null);
+                  setHintDirection(null);
+                }, 320);
+              }, 160);
+            }
+          }, 55);
+        }
+      } else {
+        setDeadlockDetected(true);
+      }
+    } catch {
+      setDeadlockDetected(true);
+    }
+  }, [applySingleMove, board, clearWalkTimer, gameState, isSolving]);
+
+  // 演示进度手动跳转（精确同步步数与推箱计数）
+  const handleSeekStep = useCallback(
+    (targetStep: number) => {
+      if (!solverResult?.steps) return;
+      const clamped = Math.max(0, Math.min(targetStep, solverResult.steps.length));
+      setCurrentStepIndex(clamped);
+
+      const snap = demoSnapshotRef.current;
+      const baseMoves = snap ? snap.moves : 0;
+      const basePushes = snap ? snap.pushes : 0;
+      const deltaPushes = snap ? snap.prefixPushes[clamped] || 0 : 0;
+
+      if (clamped === 0) {
+        const initPlayer = snap ? snap.player : board.initialPlayer;
+        const initFacing = snap ? snap.playerFacing : 'd';
+        const initBoxes = snap ? snap.boxes : board.initialBoxes;
+        setGameState(old => ({
+          ...old,
+          player: { ...initPlayer },
+          playerFacing: initFacing,
+          boxes: initBoxes.map(b => ({ ...b })),
+          movesCount: baseMoves,
+          pushesCount: basePushes,
+          isWon: checkIsWon(initBoxes, board.goals),
+        }));
+      } else {
+        const step = solverResult.steps[clamped - 1];
+        if (step) {
+          setGameState(old => ({
+            ...old,
+            player: { ...step.player },
+            playerFacing: step.moveChar.toLowerCase() as Direction,
+            boxes: step.boxes.map(b => ({ ...b })),
+            movesCount: baseMoves + clamped,
+            pushesCount: basePushes + deltaPushes,
+            isWon: checkIsWon(step.boxes, board.goals),
+          }));
+        }
+      }
+    },
+    [board, solverResult]
+  );
+
+  // 7. 全局键盘热键绑定（包含最新 triggerHint 引用）
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (isLevelSelectorOpen || isVictoryModalOpen) return;
@@ -325,8 +524,14 @@ export const App: React.FC = () => {
           break;
         case ' ':
           e.preventDefault();
-          if (isDemonstrating) {
-            setIsPlaying(p => !p);
+          if (isDemonstrating && solverResult?.steps) {
+            if (currentStepIndex >= solverResult.steps.length) {
+              // 演示结束后按空格重播
+              handleSeekStep(0);
+              setIsPlaying(true);
+            } else {
+              setIsPlaying(p => !p);
+            }
           }
           break;
         default:
@@ -337,59 +542,35 @@ export const App: React.FC = () => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
+    currentStepIndex,
     executeMove,
-    handleUndo,
     handleRedo,
     handleReset,
+    handleSeekStep,
+    handleUndo,
     isDemonstrating,
     isLevelSelectorOpen,
     isVictoryModalOpen,
+    solverResult,
+    triggerHint,
   ]);
 
-  // 7. AI 单步提示 (Hint)
-  const triggerHint = useCallback(() => {
-    if (gameState.isWon || isSolving) return;
-
-    try {
-      const solver = new SokobanSolver(board);
-      const res = solver.solve(gameState.player, gameState.boxes, {
-        maxStates: 100000,
-        timeoutMs: 1500,
-      });
-
-      if (res.success && res.steps && res.steps.length > 0) {
-        const firstStep = res.steps[0];
-        const moveChar = firstStep.moveChar;
-        const dir = moveChar.toLowerCase() as Direction;
-
-        // 如果是推箱步，高亮当前被推的箱子
-        if (moveChar === moveChar.toUpperCase()) {
-          const delta = DIR_DELTA[dir];
-          const boxPos = {
-            x: gameState.player.x + delta.dx,
-            y: gameState.player.y + delta.dy,
-          };
-          setHintBox(boxPos);
-          setHintDirection(dir);
-        }
-
-        // 闪烁后自动执行该提示步
-        setTimeout(() => {
-          executeMove(dir);
-        }, 120);
-      } else {
-        setDeadlockDetected(true);
-      }
-    } catch {
-      setDeadlockDetected(true);
-    }
-  }, [board, executeMove, gameState, isSolving]);
-
-  // 8. 启动完整 AI 求解演示
+  // 8. 启动 / 取消完整 AI 求解演示
   const startAIDemo = useCallback(() => {
     if (gameState.isWon || isSolving) return;
+    clearWalkTimer();
+    setHintBox(null);
+    setHintDirection(null);
     setIsSolving(true);
     setDeadlockDetected(false);
+
+    pendingStartSnapshotRef.current = {
+      moves: gameState.movesCount,
+      pushes: gameState.pushesCount,
+      player: { ...gameState.player },
+      playerFacing: gameState.playerFacing,
+      boxes: gameState.boxes.map(b => ({ ...b })),
+    };
 
     workerRef.current?.postMessage({
       type: 'SOLVE',
@@ -404,14 +585,20 @@ export const App: React.FC = () => {
         },
       },
     });
-  }, [board, gameState, isSolving]);
+  }, [board, clearWalkTimer, gameState, isSolving]);
+
+  const handleCancelSolve = useCallback(() => {
+    if (!isSolving) return;
+    setIsSolving(false);
+    spawnWorker();
+  }, [isSolving, spawnWorker]);
 
   // 9. AI 演示播放控制器计时器
   useEffect(() => {
     if (!isDemonstrating || !isPlaying || !solverResult?.steps) return;
 
-    const intervalTime = Math.max(50, Math.round(180 / playbackSpeed));
-    const timer = setInterval(() => {
+    const intervalTime = Math.max(45, Math.round(180 / playbackSpeed));
+    const timer = window.setInterval(() => {
       setCurrentStepIndex(prev => {
         const nextIdx = prev + 1;
         if (nextIdx > solverResult.steps!.length) {
@@ -423,19 +610,27 @@ export const App: React.FC = () => {
         if (step) {
           const isPush = step.moveChar === step.moveChar.toUpperCase();
           const dir = step.moveChar.toLowerCase() as Direction;
+          const snap = demoSnapshotRef.current;
+          const baseMoves = snap ? snap.moves : 0;
+          const basePushes = snap ? snap.pushes : 0;
+          const deltaPushes = snap ? snap.prefixPushes[nextIdx] || 0 : 0;
 
           setGameState(old => ({
             ...old,
             player: { ...step.player },
             playerFacing: dir,
             boxes: step.boxes.map(b => ({ ...b })),
-            movesCount: old.movesCount + 1,
-            pushesCount: old.pushesCount + (isPush ? 1 : 0),
+            movesCount: baseMoves + nextIdx,
+            pushesCount: basePushes + deltaPushes,
+            isWon: checkIsWon(step.boxes, board.goals),
           }));
 
           if (isPush) {
             sound.playPush();
-            if (board.goals[step.player.y]?.[step.player.x]) {
+            const delta = DIR_DELTA[dir];
+            const boxDestX = step.player.x + delta.dx;
+            const boxDestY = step.player.y + delta.dy;
+            if (board.goals[boxDestY]?.[boxDestX]) {
               sound.playTargetChime();
             }
           } else {
@@ -452,44 +647,16 @@ export const App: React.FC = () => {
       });
     }, intervalTime);
 
-    return () => clearInterval(timer);
+    return () => window.clearInterval(timer);
   }, [board, isDemonstrating, isPlaying, playbackSpeed, solverResult]);
-
-  // 演示进度手动跳转
-  const handleSeekStep = useCallback(
-    (targetStep: number) => {
-      if (!solverResult?.steps) return;
-      const clamped = Math.max(0, Math.min(targetStep, solverResult.steps.length));
-      setCurrentStepIndex(clamped);
-
-      if (clamped === 0) {
-        setGameState(old => ({
-          ...old,
-          player: { ...board.initialPlayer },
-          boxes: board.initialBoxes.map(b => ({ ...b })),
-        }));
-      } else {
-        const step = solverResult.steps[clamped - 1];
-        if (step) {
-          setGameState(old => ({
-            ...old,
-            player: { ...step.player },
-            playerFacing: step.moveChar.toLowerCase() as Direction,
-            boxes: step.boxes.map(b => ({ ...b })),
-          }));
-        }
-      }
-    },
-    [board, solverResult]
-  );
 
   // 回退到最近可解状态
   const handleRollbackToSolvable = useCallback(() => {
+    clearWalkTimer();
     setDeadlockDetected(false);
     let curState = { ...gameState };
     const solver = new SokobanSolver(board);
 
-    // 沿撤销栈逆序回溯查找第一个可解状态
     while (curState.history.length > 0) {
       curState = undoMove(curState, board);
       const test = solver.solve(curState.player, curState.boxes, {
@@ -499,26 +666,68 @@ export const App: React.FC = () => {
       if (test.success) {
         setGameState(curState);
         sound.playUndo();
-        // 自动触发从该状态演示
-        setTimeout(() => {
-          startAIDemo();
-        }, 100);
+
+        pendingStartSnapshotRef.current = {
+          moves: curState.movesCount,
+          pushes: curState.pushesCount,
+          player: { ...curState.player },
+          playerFacing: curState.playerFacing,
+          boxes: curState.boxes.map(b => ({ ...b })),
+        };
+        setIsSolving(true);
+        workerRef.current?.postMessage({
+          type: 'SOLVE',
+          payload: {
+            board,
+            player: curState.player,
+            boxes: curState.boxes,
+            options: {
+              maxStates: 400000,
+              timeoutMs: 5000,
+              weight: 1.3,
+            },
+          },
+        });
         return;
       }
     }
 
-    // 若全部无解则重置
     handleReset();
-    setTimeout(() => {
-      startAIDemo();
-    }, 100);
-  }, [board, gameState, handleReset, startAIDemo]);
+    pendingStartSnapshotRef.current = {
+      moves: 0,
+      pushes: 0,
+      player: { ...board.initialPlayer },
+      playerFacing: 'd',
+      boxes: board.initialBoxes.map(b => ({ ...b })),
+    };
+    setIsSolving(true);
+    workerRef.current?.postMessage({
+      type: 'SOLVE',
+      payload: {
+        board,
+        player: board.initialPlayer,
+        boxes: board.initialBoxes,
+        options: {
+          maxStates: 400000,
+          timeoutMs: 5000,
+          weight: 1.3,
+        },
+      },
+    });
+  }, [board, clearWalkTimer, gameState, handleReset]);
 
   // 重置并从头演示
   const handleResetAndDemo = useCallback(() => {
     setDeadlockDetected(false);
     handleReset();
-    setTimeout(() => {
+    pendingStartSnapshotRef.current = {
+      moves: 0,
+      pushes: 0,
+      player: { ...board.initialPlayer },
+      playerFacing: 'd',
+      boxes: board.initialBoxes.map(b => ({ ...b })),
+    };
+    window.setTimeout(() => {
       setIsSolving(true);
       workerRef.current?.postMessage({
         type: 'SOLVE',
@@ -533,7 +742,7 @@ export const App: React.FC = () => {
           },
         },
       });
-    }, 80);
+    }, 60);
   }, [board, handleReset]);
 
   // 退出接管
@@ -550,9 +759,18 @@ export const App: React.FC = () => {
     });
   }, []);
 
+  const handleTogglePlay = useCallback(() => {
+    if (solverResult?.steps && currentStepIndex >= solverResult.steps.length) {
+      handleSeekStep(0);
+      setIsPlaying(true);
+    } else {
+      setIsPlaying(p => !p);
+    }
+  }, [currentStepIndex, handleSeekStep, solverResult]);
+
   return (
-    <div className="relative min-h-screen bg-studio-950 text-studio-100 flex flex-col font-sans selection:bg-amber-500 selection:text-studio-950 overflow-hidden">
-      {/* 桌面端精致环境氛围微光（消除大屏两侧死黑） */}
+    <div className="relative min-h-[100dvh] bg-studio-950 text-studio-100 flex flex-col font-sans selection:bg-amber-500 selection:text-studio-950 overflow-x-hidden">
+      {/* 桌面端精致环境氛围微光 */}
       <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-amber-500/10 via-studio-950/80 to-studio-950 -z-10" />
 
       {/* 顶部状态栏 */}
@@ -562,6 +780,8 @@ export const App: React.FC = () => {
         totalLevels={LEVELS.length}
         movesCount={gameState.movesCount}
         pushesCount={gameState.pushesCount}
+        goalsOnTarget={goalsOnTarget}
+        totalGoals={board.goalPositions.length}
         canUndo={gameState.history.length > 0}
         canRedo={gameState.redoStack.length > 0}
         isMuted={isMuted}
@@ -583,16 +803,16 @@ export const App: React.FC = () => {
       />
 
       {/* 主游戏区域 */}
-      <main className="flex-1 flex flex-col items-center justify-between p-2 sm:p-4 max-w-7xl mx-auto w-full overflow-hidden">
+      <main className="flex-1 flex flex-col items-center justify-between p-2 sm:p-4 max-w-7xl mx-auto w-full">
         {/* 关卡简要导言 */}
-        <div className="w-full text-center py-1">
+        <div className="w-full text-center py-0.5 sm:py-1">
           <span className="text-xs text-studio-400 font-game">
             {activeLevel.chapterTitle} · {activeLevel.description}
           </span>
         </div>
 
         {/* 核心 2.5D SVG 棋盘 */}
-        <div className="flex-1 w-full flex items-center justify-center">
+        <div className="flex-1 w-full flex items-center justify-center min-h-0">
           <SokobanBoard
             board={board}
             player={gameState.player}
@@ -600,9 +820,11 @@ export const App: React.FC = () => {
             boxes={gameState.boxes}
             hintBox={hintBox}
             hintDirection={hintDirection}
+            walkTarget={walkTarget}
             deadlockedBoxes={deadlockedBoxes}
             showDeadlockWarning={showDeadlockWarning}
             onCellClick={handleCellClick}
+            onSwipeMove={executeMove}
             onUndo={handleUndo}
             isAiDemonstrating={isDemonstrating}
           />
@@ -628,7 +850,8 @@ export const App: React.FC = () => {
             solverResult={solverResult}
             onTriggerHint={triggerHint}
             onStartDemo={startAIDemo}
-            onTogglePlay={() => setIsPlaying(p => !p)}
+            onCancelSolve={handleCancelSolve}
+            onTogglePlay={handleTogglePlay}
             onStepPrev={() => handleSeekStep(currentStepIndex - 1)}
             onStepNext={() => handleSeekStep(currentStepIndex + 1)}
             onSeekStep={handleSeekStep}
@@ -642,7 +865,7 @@ export const App: React.FC = () => {
 
         {/* 桌面端操作快捷键贴心提示条 */}
         <div className="hidden sm:flex items-center justify-center py-1 text-[11px] text-studio-500 font-game tracking-wider">
-          WASD / 方向键 移动 · 点击空地寻路 · Z 撤销 · R 重开 · H 提示 · Space 演示播放/暂停
+          WASD / 方向键 移动 · 点击空地寻路 · Z 撤销 · Y 重做 · R 重开 · H 提示 · Space 演示播放/暂停
         </div>
       </main>
 
@@ -670,6 +893,7 @@ export const App: React.FC = () => {
         movesCount={gameState.movesCount}
         pushesCount={gameState.pushesCount}
         stars={progressMap[activeLevel.id]?.stars || 3}
+        isNewBest={isNewBest}
         onReplay={() => {
           setIsVictoryModalOpen(false);
           handleReset();

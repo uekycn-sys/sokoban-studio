@@ -27,6 +27,7 @@ interface AIDemoBarProps {
   solverResult: SolverResult | null;
   onTriggerHint: () => void;
   onStartDemo: () => void;
+  onCancelSolve?: () => void;
   onTogglePlay: () => void;
   onStepPrev: () => void;
   onStepNext: () => void;
@@ -49,6 +50,7 @@ export const AIDemoBar: React.FC<AIDemoBarProps> = ({
   solverResult,
   onTriggerHint,
   onStartDemo,
+  onCancelSolve,
   onTogglePlay,
   onStepPrev,
   onStepNext,
@@ -60,6 +62,7 @@ export const AIDemoBar: React.FC<AIDemoBarProps> = ({
   onDismissDeadlock,
 }) => {
   const speeds = [0.5, 1, 2, 4];
+  const isDemoFinished = isDemonstrating && totalDemoSteps > 0 && currentStepIndex >= totalDemoSteps;
 
   // 死局提示条状态
   if (deadlockDetected) {
@@ -109,16 +112,20 @@ export const AIDemoBar: React.FC<AIDemoBarProps> = ({
         <div className="flex flex-wrap items-center justify-between gap-2">
           {/* 演示状态标识 */}
           <div className="flex items-center gap-2">
-            <span className="relative flex h-3 w-3">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
-            </span>
-            <span className="text-xs sm:text-sm font-semibold text-amber-300 font-sans">
-              AI 步骤演示中
+            {isDemoFinished ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            ) : (
+              <span className="relative flex h-3 w-3">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
+              </span>
+            )}
+            <span className={`text-xs sm:text-sm font-semibold font-sans ${isDemoFinished ? 'text-emerald-300' : 'text-amber-300'}`}>
+              {isDemoFinished ? 'AI 演示已完成' : 'AI 步骤演示中'}
             </span>
             {solverResult && (
               <span className="text-[11px] font-game text-studio-400 hidden sm:inline">
-                · 已找到 {solverResult.totalStepsCount} 步解法 (耗时 {solverResult.durationMs.toFixed(1)}ms)
+                · {solverResult.pushMovesCount}推 / {solverResult.totalStepsCount}步 ({solverResult.durationMs.toFixed(1)}ms)
               </span>
             )}
           </div>
@@ -147,7 +154,7 @@ export const AIDemoBar: React.FC<AIDemoBarProps> = ({
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-studio-800 hover:bg-studio-700 text-studio-100 text-xs font-medium border border-studio-700 transition-colors"
           >
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-            接管控制
+            {isDemoFinished ? '退出回放' : '接管控制'}
           </button>
         </div>
 
@@ -202,9 +209,13 @@ export const AIDemoBar: React.FC<AIDemoBarProps> = ({
   return (
     <div className="w-full max-w-4xl mx-auto px-4 py-2.5 bg-studio-900/80 border border-studio-800 rounded-2xl shadow-xl backdrop-blur-md flex flex-wrap items-center justify-between gap-3">
       <div className="flex items-center gap-2 text-studio-300 text-xs sm:text-sm">
-        <Bot className="w-4 h-4 text-amber-400" />
-        <span className="font-semibold text-studio-200">AI 推箱助手</span>
-        <span className="hidden sm:inline text-studio-400">· 卡关时可获取单步提示或完整演示</span>
+        <Bot className={`w-4 h-4 ${isSolving ? 'text-amber-400 animate-pulse' : 'text-amber-400'}`} />
+        <span className="font-semibold text-studio-200">
+          {isSolving ? 'AI 深度求解中...' : 'AI 推箱助手'}
+        </span>
+        <span className="hidden sm:inline text-studio-400">
+          {isSolving ? '· 正在 Web Worker 后台计算最优路径' : '· 卡关时可获取单步提示或完整演示'}
+        </span>
       </div>
 
       <div className="flex items-center gap-2">
@@ -217,14 +228,24 @@ export const AIDemoBar: React.FC<AIDemoBarProps> = ({
           单步提示 (H)
         </button>
 
-        <button
-          onClick={onStartDemo}
-          disabled={isSolving}
-          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-studio-950 text-xs font-semibold shadow-glow-amber transition-all disabled:opacity-50"
-        >
-          <Sparkles className="w-3.5 h-3.5" />
-          {isSolving ? '深度求解中...' : '完整步骤演示'}
-        </button>
+        {isSolving && onCancelSolve ? (
+          <button
+            onClick={onCancelSolve}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-red-900/80 hover:bg-red-800 text-red-100 text-xs font-semibold border border-red-700/80 transition-all"
+          >
+            <X className="w-3.5 h-3.5" />
+            取消求解
+          </button>
+        ) : (
+          <button
+            onClick={onStartDemo}
+            disabled={isSolving}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-studio-950 text-xs font-semibold shadow-glow-amber transition-all disabled:opacity-50"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            完整步骤演示
+          </button>
+        )}
       </div>
     </div>
   );

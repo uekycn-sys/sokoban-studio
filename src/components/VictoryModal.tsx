@@ -9,6 +9,7 @@ interface VictoryModalProps {
   movesCount: number;
   pushesCount: number;
   stars: number;
+  isNewBest?: boolean;
   onReplay: () => void;
   onNextLevel: () => void;
   hasNextLevel: boolean;
@@ -20,25 +21,38 @@ export const VictoryModal: React.FC<VictoryModalProps> = ({
   movesCount,
   pushesCount,
   stars,
+  isNewBest = false,
   onReplay,
   onNextLevel,
   hasNextLevel,
 }) => {
   useEffect(() => {
-    if (isOpen) {
-      // 触发五彩礼花特效
-      try {
-        confetti({
-          particleCount: 80,
-          spread: 70,
-          origin: { y: 0.6 },
-          colors: ['#f59e0b', '#10b981', '#3b82f6', '#ec4899'],
-        });
-      } catch {
-        // 忽略异常
-      }
+    if (!isOpen) return;
+
+    // 触发五彩礼花特效
+    try {
+      confetti({
+        particleCount: 80,
+        spread: 70,
+        origin: { y: 0.6 },
+        colors: ['#f59e0b', '#10b981', '#3b82f6', '#ec4899'],
+      });
+    } catch {
+      // 忽略异常
     }
-  }, [isOpen]);
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.key === 'Enter' || e.key === ' ') && hasNextLevel) {
+        e.preventDefault();
+        onNextLevel();
+      } else if (e.key === 'r' || e.key === 'R') {
+        e.preventDefault();
+        onReplay();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, hasNextLevel, onNextLevel, onReplay]);
 
   if (!isOpen) return null;
 
@@ -50,9 +64,17 @@ export const VictoryModal: React.FC<VictoryModalProps> = ({
           <Trophy className="w-8 h-8 text-studio-950" />
         </div>
 
-        <h2 className="text-2xl font-bold text-studio-100 font-sans tracking-tight">
-          关卡达成！
-        </h2>
+        <div className="flex items-center gap-2">
+          <h2 className="text-2xl font-bold text-studio-100 font-sans tracking-tight">
+            关卡达成！
+          </h2>
+          {isNewBest && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[11px] font-semibold">
+              <Sparkles className="w-3 h-3" />
+              新纪录
+            </span>
+          )}
+        </div>
         <p className="text-xs text-studio-400 mt-1">
           恭喜通过第 {level.id} 关 · {level.title}
         </p>
@@ -102,7 +124,7 @@ export const VictoryModal: React.FC<VictoryModalProps> = ({
             className="flex-1 py-3 px-4 rounded-xl bg-studio-800 hover:bg-studio-700 text-studio-200 font-medium text-sm border border-studio-700 transition-colors flex items-center justify-center gap-1.5"
           >
             <RotateCcw className="w-4 h-4" />
-            重玩本关
+            重玩本关 (R)
           </button>
 
           {hasNextLevel && (
@@ -110,7 +132,7 @@ export const VictoryModal: React.FC<VictoryModalProps> = ({
               onClick={onNextLevel}
               className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-studio-950 font-bold text-sm shadow-glow-amber transition-all flex items-center justify-center gap-1.5"
             >
-              下一关
+              下一关 (Enter)
               <ArrowRight className="w-4 h-4" />
             </button>
           )}
