@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><defs><clipPath id="favClip"><rect width="512" height="512" rx="112"/></clipPath></defs><g clip-path="url(#favClip)">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="35%" r="80%">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="60%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#080d17"/>
+    </radialGradient>
+    <radialGradient id="targetGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#f59e0b" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="crateBody" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="50%" stop-color="#d97706"/>
+      <stop offset="100%" stop-color="#92400e"/>
+    </linearGradient>
+    <linearGradient id="crateInner" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#b45309"/>
+      <stop offset="100%" stop-color="#78350f"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <!-- Subtle floor tiles -->
+  <g stroke="#334155" stroke-opacity="0.25" stroke-width="2" fill="none">
+    <rect x="64" y="64" width="128" height="128"/>
+    <rect x="192" y="64" width="128" height="128"/>
+    <rect x="320" y="64" width="128" height="128"/>
+    <rect x="64" y="192" width="128" height="128"/>
+    <rect x="320" y="192" width="128" height="128"/>
+    <rect x="64" y="320" width="128" height="128"/>
+    <rect x="192" y="320" width="128" height="128"/>
+    <rect x="320" y="320" width="128" height="128"/>
+  </g>
+  <circle cx="256" cy="256" r="200" fill="url(#targetGlow)"/>
+  <!-- Crate Outer Frame -->
+  <rect x="108" y="108" width="296" height="296" rx="34" fill="url(#crateBody)" stroke="#fde68a" stroke-opacity="0.55" stroke-width="6"/>
+  <!-- Inner Recessed Panel -->
+  <rect x="142" y="142" width="228" height="228" rx="18" fill="url(#crateInner)" stroke="#f59e0b" stroke-opacity="0.5" stroke-width="4"/>
+  <!-- Cross Planks -->
+  <line x1="154" y1="154" x2="358" y2="358" stroke="#f59e0b" stroke-width="20" stroke-linecap="round"/>
+  <line x1="358" y1="154" x2="154" y2="358" stroke="#f59e0b" stroke-width="20" stroke-linecap="round"/>
+  <line x1="154" y1="154" x2="358" y2="358" stroke="#fde68a" stroke-opacity="0.55" stroke-width="6" stroke-linecap="round"/>
+  <line x1="358" y1="154" x2="154" y2="358" stroke="#fde68a" stroke-opacity="0.55" stroke-width="6" stroke-linecap="round"/>
+  <!-- Center Target Jewel -->
+  <circle cx="256" cy="256" r="28" fill="#0f172a" stroke="#fbbf24" stroke-width="6"/>
+  <circle cx="256" cy="256" r="12" fill="#fde68a"/>
+</g></svg>
