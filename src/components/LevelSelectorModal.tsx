@@ -167,11 +167,11 @@ export const LevelSelectorModal: React.FC<LevelSelectorModalProps> = ({
   if (!isOpen) return null;
 
   const chapters = [
-    { id: 1, title: '入门教学', desc: '规则熟悉与直道推箱' },
-    { id: 2, title: '巧思进阶', desc: '拐角腾挪与通道调度' },
-    { id: 3, title: '空间腾挪', desc: '多箱错位与借位技巧' },
-    { id: 4, title: '大师试炼', desc: '双环连动与深层置换' },
-    { id: 5, title: '经典挑战', desc: '传世残局与极限博弈' },
+    { id: 1, title: '战术启蒙', desc: '绕柱借位与顺序规划' },
+    { id: 2, title: '逻辑陷阱', desc: '破除贪心与窄道腾挪' },
+    { id: 3, title: '拓扑迷局', desc: '动态图割与逆序填装' },
+    { id: 4, title: '大师殿堂', desc: '深层暂存与反直觉拆解' },
+    { id: 5, title: '宗师终局', desc: '殿堂级紧凑残局试炼' },
   ];
 
   const currentChapterLevels = typeof selectedTab === 'number'
@@ -185,7 +185,8 @@ export const LevelSelectorModal: React.FC<LevelSelectorModalProps> = ({
 
     setTimeout(() => {
       try {
-        const board = parseXSB(customXSB.trim());
+        const cleanXsb = customXSB.replace(/^\s*\n|\n\s*$/g, '');
+        const board = parseXSB(cleanXsb);
 
         if (board.goalPositions.length === 0 || board.initialBoxes.length === 0) {
           throw new Error('关卡必须包含至少一个箱子 ($) 和目标点 (.)');
@@ -202,8 +203,9 @@ export const LevelSelectorModal: React.FC<LevelSelectorModalProps> = ({
 
         const solver = new SokobanSolver(board);
         const result = solver.solve(board.initialPlayer, board.initialBoxes, {
-          timeoutMs: 4000,
-          maxStates: 300000,
+          timeoutMs: 6000,
+          maxStates: 500000,
+          weight: 1.25,
         });
 
         if (!result.success) {
@@ -218,7 +220,7 @@ export const LevelSelectorModal: React.FC<LevelSelectorModalProps> = ({
           difficulty: 'Legend',
           description: `玩家自建关卡 · AI 求解耗时 ${result.durationMs.toFixed(1)}ms (${result.pushMovesCount} 推 / ${result.totalStepsCount} 步)`,
           parSteps: result.totalStepsCount,
-          xsb: customXSB.trim(),
+          xsb: cleanXsb,
         };
 
         setCustomSuccessInfo(`✅ 校验成功！AI 已算出最优解（${result.pushMovesCount}推 / ${result.totalStepsCount}步，耗时 ${result.durationMs.toFixed(1)}ms）`);

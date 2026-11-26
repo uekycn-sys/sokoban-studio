@@ -1,12 +1,16 @@
 import { Position, ParsedBoard, SolverResult } from '../types/game';
 import { SokobanSolver, SolverOptions } from './solverCore';
 
+export type SolveMode = 'demo' | 'hint';
+
 export interface WorkerSolveRequest {
   type: 'SOLVE';
   payload: {
     board: ParsedBoard;
     player: Position;
     boxes: Position[];
+    mode?: SolveMode;
+    requestId?: number;
     options?: SolverOptions;
   };
 }
@@ -29,7 +33,7 @@ self.onmessage = (e: MessageEvent<WorkerMessage>) => {
 
   if (data.type === 'SOLVE') {
     currentAbortFlag = false;
-    const { board, player, boxes, options } = data.payload;
+    const { board, player, boxes, mode = 'demo', requestId, options } = data.payload;
 
     try {
       const solver = new SokobanSolver(board);
@@ -41,8 +45,10 @@ self.onmessage = (e: MessageEvent<WorkerMessage>) => {
       self.postMessage({
         type: 'SOLVE_RESULT',
         payload: result,
+        mode,
+        requestId,
       });
-    } catch (err: any) {
+    } catch {
       self.postMessage({
         type: 'SOLVE_RESULT',
         payload: {
@@ -54,6 +60,8 @@ self.onmessage = (e: MessageEvent<WorkerMessage>) => {
           durationMs: 0,
           reason: 'unsolvable',
         } as SolverResult,
+        mode,
+        requestId,
       });
     }
   }

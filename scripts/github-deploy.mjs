@@ -171,7 +171,7 @@ async function main() {
   // 5. 创建 Commit
   console.log('\n5️⃣ 正在创建发布提交 (Commit)...');
   const commitPayload = {
-    message: 'feat: final polish, seamless 2.5D walls, smart hint & mobile gestures',
+    message: 'feat: professional-grade sculpted Sokoban levels & fixed Hungarian/freeze AI solver',
     tree: tree.sha,
     parents: parentSha ? [parentSha] : []
   };

@@ -40,7 +40,7 @@ interface DemoSnapshot {
 export const App: React.FC = () => {
   // 1. 关卡与存档持久化
   const [levelIndex, setLevelIndex] = useState<number>(() => {
-    const saved = localStorage.getItem('sokoban_current_level');
+    const saved = localStorage.getItem('sokoban_current_level_v3');
     const idx = saved ? parseInt(saved, 10) : 0;
     return idx >= 0 && idx < LEVELS.length ? idx : 0;
   });
@@ -49,7 +49,7 @@ export const App: React.FC = () => {
 
   const [progressMap, setProgressMap] = useState<Record<number, LevelProgress>>(() => {
     try {
-      const saved = localStorage.getItem('sokoban_progress');
+      const saved = localStorage.getItem('sokoban_progress_v3');
       return saved ? JSON.parse(saved) : {};
     } catch {
       return {};
@@ -117,6 +117,10 @@ export const App: React.FC = () => {
 
   // Web Worker 引用与生命周期管理
   const workerRef = useRef<Worker | null>(null);
+  const solveRequestIdRef = useRef<number>(0);
+  const workerResultHandlerRef = useRef<
+    ((result: SolverResult, mode: 'demo' | 'hint', requestId?: number) => void) | null
+  >(null);
 
   const spawnWorker = useCallback(() => {
     workerRef.current?.terminate();
@@ -129,34 +133,13 @@ export const App: React.FC = () => {
       const data = e.data;
       if (data.type === 'SOLVE_RESULT') {
         const result: SolverResult = data.payload;
-        setIsSolving(false);
-        setSolverResult(result);
-
-        if (result.success && result.steps && result.steps.length > 0) {
-          const prefixPushes: number[] = [0];
-          let pushAcc = 0;
-          for (const st of result.steps) {
-            if (st.moveChar === st.moveChar.toUpperCase()) {
-              pushAcc++;
-            }
-            prefixPushes.push(pushAcc);
-          }
-
-          const base = pendingStartSnapshotRef.current;
-          if (base) {
-            demoSnapshotRef.current = {
-              ...base,
-              prefixPushes,
-            };
-          }
-
-          setDeadlockDetected(false);
-          setIsDemonstrating(true);
-          setIsPlaying(true);
-          setCurrentStepIndex(0);
-        } else {
-          setDeadlockDetected(true);
+        const mode: 'demo' | 'hint' = data.mode ?? 'demo';
+        const requestId: number | undefined = data.requestId;
+        if (requestId !== undefined && requestId !== solveRequestIdRef.current) {
+          return;
         }
+        setIsSolving(false);
+        workerResultHandlerRef.current?.(result, mode, requestId);
       }
     };
 
@@ -173,7 +156,9 @@ export const App: React.FC = () => {
 
   // 换关或加载自定义关卡时重置状态
   useEffect(() => {
+    solveRequestIdRef.current++;
     clearWalkTimer();
+    setIsSolving(false);
     setGameState(createInitialGameState(board));
     setHintBox(null);
     setHintDirection(null);
@@ -185,7 +170,7 @@ export const App: React.FC = () => {
     setIsNewBest(false);
     demoSnapshotRef.current = null;
     if (!customLevel) {
-      localStorage.setItem('sokoban_current_level', String(levelIndex));
+      localStorage.setItem('sokoban_current_level_v3', String(levelIndex));
     }
   }, [board, clearWalkTimer, customLevel, levelIndex]);
 
@@ -253,7 +238,7 @@ export const App: React.FC = () => {
                 stars: newStars,
               },
             };
-            localStorage.setItem('sokoban_progress', JSON.stringify(updated));
+            localStorage.setItem('sokoban_progress_v3', JSON.stringify(updated));
             return updated;
           });
         }
@@ -264,16 +249,23 @@ export const App: React.FC = () => {
     [activeLevel, board, isDemonstrating]
   );
 
+  const invalidatePendingSolve = useCallback(() => {
+    solveRequestIdRef.current++;
+    setIsSolving(false);
+  }, []);
+
   const executeMove = useCallback(
     (dir: Direction) => {
+      invalidatePendingSolve();
       clearWalkTimer();
       applySingleMove(dir, true);
     },
-    [applySingleMove, clearWalkTimer]
+    [applySingleMove, clearWalkTimer, invalidatePendingSolve]
   );
 
   // 撤销 / 重做 / 重开
   const handleUndo = useCallback(() => {
+    invalidatePendingSolve();
     clearWalkTimer();
     if (isDemonstrating) {
       setIsDemonstrating(false);
@@ -288,9 +280,10 @@ export const App: React.FC = () => {
       sound.playUndo();
       return next;
     });
-  }, [board, clearWalkTimer, isDemonstrating]);
+  }, [board, clearWalkTimer, invalidatePendingSolve, isDemonstrating]);
 
   const handleRedo = useCallback(() => {
+    invalidatePendingSolve();
     clearWalkTimer();
     if (isDemonstrating) {
       setIsDemonstrating(false);
@@ -304,9 +297,10 @@ export const App: React.FC = () => {
       sound.playStep();
       return next;
     });
-  }, [board, clearWalkTimer, isDemonstrating]);
+  }, [board, clearWalkTimer, invalidatePendingSolve, isDemonstrating]);
 
   const handleReset = useCallback(() => {
+    invalidatePendingSolve();
     clearWalkTimer();
     if (isDemonstrating) {
       setIsDemonstrating(false);
@@ -317,12 +311,13 @@ export const App: React.FC = () => {
     setGameState(createInitialGameState(board));
     setHintBox(null);
     setHintDirection(null);
-  }, [board, clearWalkTimer, isDemonstrating]);
+  }, [board, clearWalkTimer, invalidatePendingSolve, isDemonstrating]);
 
   // 5. 点击自动寻路 / 相邻推箱
   const handleCellClick = useCallback(
     (targetPos: Position) => {
       if (gameState.isWon || isDemonstrating) return;
+      invalidatePendingSolve();
       clearWalkTimer();
 
       // 检查是否点击了与人物相邻的箱子（直觉点推）
@@ -363,21 +358,11 @@ export const App: React.FC = () => {
         }, 48);
       }
     },
-    [applySingleMove, board, clearWalkTimer, gameState, isDemonstrating]
+    [applySingleMove, board, clearWalkTimer, gameState, invalidatePendingSolve, isDemonstrating]
   );
 
-  // 6. AI 智能单步提示 (Hint)：定位最近一次推箱动作，高亮目标箱子与方向并优雅移动推入
-  const triggerHint = useCallback(() => {
-    if (gameState.isWon || isSolving) return;
-    clearWalkTimer();
-
-    try {
-      const solver = new SokobanSolver(board);
-      const res = solver.solve(gameState.player, gameState.boxes, {
-        maxStates: 120000,
-        timeoutMs: 1800,
-      });
-
+  const executeHintResult = useCallback(
+    (res: SolverResult) => {
       if (res.success && res.steps && res.steps.length > 0) {
         const firstPushIdx = res.steps.findIndex(
           s => s.moveChar === s.moveChar.toUpperCase()
@@ -424,10 +409,70 @@ export const App: React.FC = () => {
       } else {
         setDeadlockDetected(true);
       }
-    } catch {
+    },
+    [applySingleMove, clearWalkTimer]
+  );
+
+  workerResultHandlerRef.current = (result: SolverResult, mode: 'demo' | 'hint') => {
+    if (mode === 'hint') {
+      executeHintResult(result);
+      return;
+    }
+
+    setSolverResult(result);
+    if (result.success && result.steps && result.steps.length > 0) {
+      const prefixPushes: number[] = [0];
+      let pushAcc = 0;
+      for (const st of result.steps) {
+        if (st.moveChar === st.moveChar.toUpperCase()) {
+          pushAcc++;
+        }
+        prefixPushes.push(pushAcc);
+      }
+
+      const base = pendingStartSnapshotRef.current;
+      if (base) {
+        demoSnapshotRef.current = {
+          ...base,
+          prefixPushes,
+        };
+      }
+
+      setDeadlockDetected(false);
+      setIsDemonstrating(true);
+      setIsPlaying(true);
+      setCurrentStepIndex(0);
+    } else {
       setDeadlockDetected(true);
     }
-  }, [applySingleMove, board, clearWalkTimer, gameState, isSolving]);
+  };
+
+  // 6. AI 智能单步提示 (Hint)：通过 Web Worker 非阻塞求解并高亮推动下一步
+  const triggerHint = useCallback(() => {
+    if (gameState.isWon || isSolving) return;
+    clearWalkTimer();
+    setHintBox(null);
+    setHintDirection(null);
+    setDeadlockDetected(false);
+    setIsSolving(true);
+
+    const requestId = ++solveRequestIdRef.current;
+    workerRef.current?.postMessage({
+      type: 'SOLVE',
+      payload: {
+        board,
+        player: gameState.player,
+        boxes: gameState.boxes,
+        mode: 'hint',
+        requestId,
+        options: {
+          maxStates: 500000,
+          timeoutMs: 6000,
+          weight: 1.25,
+        },
+      },
+    });
+  }, [board, clearWalkTimer, gameState, isSolving]);
 
   // 演示进度手动跳转（精确同步步数与推箱计数）
   const handleSeekStep = useCallback(
@@ -572,16 +617,19 @@ export const App: React.FC = () => {
       boxes: gameState.boxes.map(b => ({ ...b })),
     };
 
+    const requestId = ++solveRequestIdRef.current;
     workerRef.current?.postMessage({
       type: 'SOLVE',
       payload: {
         board,
         player: gameState.player,
         boxes: gameState.boxes,
+        mode: 'demo',
+        requestId,
         options: {
-          maxStates: 400000,
-          timeoutMs: 5000,
-          weight: 1.3,
+          maxStates: 500000,
+          timeoutMs: 8000,
+          weight: 1.25,
         },
       },
     });
@@ -589,6 +637,7 @@ export const App: React.FC = () => {
 
   const handleCancelSolve = useCallback(() => {
     if (!isSolving) return;
+    solveRequestIdRef.current++;
     setIsSolving(false);
     spawnWorker();
   }, [isSolving, spawnWorker]);
@@ -660,8 +709,9 @@ export const App: React.FC = () => {
     while (curState.history.length > 0) {
       curState = undoMove(curState, board);
       const test = solver.solve(curState.player, curState.boxes, {
-        maxStates: 80000,
-        timeoutMs: 1200,
+        maxStates: 120000,
+        timeoutMs: 1000,
+        weight: 1.5,
       });
       if (test.success) {
         setGameState(curState);
@@ -674,6 +724,7 @@ export const App: React.FC = () => {
           playerFacing: curState.playerFacing,
           boxes: curState.boxes.map(b => ({ ...b })),
         };
+        const requestId = ++solveRequestIdRef.current;
         setIsSolving(true);
         workerRef.current?.postMessage({
           type: 'SOLVE',
@@ -681,10 +732,12 @@ export const App: React.FC = () => {
             board,
             player: curState.player,
             boxes: curState.boxes,
+            mode: 'demo',
+            requestId,
             options: {
-              maxStates: 400000,
-              timeoutMs: 5000,
-              weight: 1.3,
+              maxStates: 500000,
+              timeoutMs: 8000,
+              weight: 1.25,
             },
           },
         });
@@ -700,6 +753,7 @@ export const App: React.FC = () => {
       playerFacing: 'd',
       boxes: board.initialBoxes.map(b => ({ ...b })),
     };
+    const requestId = ++solveRequestIdRef.current;
     setIsSolving(true);
     workerRef.current?.postMessage({
       type: 'SOLVE',
@@ -707,10 +761,12 @@ export const App: React.FC = () => {
         board,
         player: board.initialPlayer,
         boxes: board.initialBoxes,
+        mode: 'demo',
+        requestId,
         options: {
-          maxStates: 400000,
-          timeoutMs: 5000,
-          weight: 1.3,
+          maxStates: 500000,
+          timeoutMs: 8000,
+          weight: 1.25,
         },
       },
     });
@@ -728,6 +784,7 @@ export const App: React.FC = () => {
       boxes: board.initialBoxes.map(b => ({ ...b })),
     };
     window.setTimeout(() => {
+      const requestId = ++solveRequestIdRef.current;
       setIsSolving(true);
       workerRef.current?.postMessage({
         type: 'SOLVE',
@@ -735,10 +792,12 @@ export const App: React.FC = () => {
           board,
           player: board.initialPlayer,
           boxes: board.initialBoxes,
+          mode: 'demo',
+          requestId,
           options: {
-            maxStates: 400000,
-            timeoutMs: 5000,
-            weight: 1.3,
+            maxStates: 500000,
+            timeoutMs: 8000,
+            weight: 1.25,
           },
         },
       });
